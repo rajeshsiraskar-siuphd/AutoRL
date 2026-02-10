@@ -3,6 +3,7 @@
 # Author: Rajesh Siraskar
 # RL for PdM code
 # V.1.0: 06-Feb-2026: First commit
+# V.1.2: Stable ver. Model eval save report | 09-Feb-2026
 # ---------------------------------------------------------------------------------------
 
 import pandas as pd
@@ -42,7 +43,7 @@ LR_DEFAULT = 0.001
 GAMMA_DEFAULT = 0.99
 SMOOTH_WINDOW = 10
 FIXED_X_AXIS_LENGTH = True # Validation: Train for fixed episodes?
-IAR_RANGE = 0.05 # ±5% variation in IAR bounds for realism
+IAR_RANGE = 0.05 # IAR bounds are ±5% across Threshold value
 
 now = datetime.now()
 date_time = now.strftime("%d-%m-%H-%M")
@@ -967,15 +968,16 @@ def train_single_model(data_file, algo_name, lr, gm, callback_func, attention_ty
         elif attention_type == 'DL':
             att_suffix_file = "_DL"
         elif attention_type == 'Temporal':
-            att_suffix_file = "_Temporal"
+            att_suffix_file = "_TP"
         elif attention_type == 'MultiHead':
-            att_suffix_file = "_MultiHead"
+            att_suffix_file = "_MH"
         elif attention_type == 'SelfAttn':
-            att_suffix_file = "_SelfAttn"
+            att_suffix_file = "_SA"
         elif attention_type == 'Hybrid':
-            att_suffix_file = "_Hybrid"
+            att_suffix_file = "_HY"
         
-        model_filename = f"{algo_name}_{training_filename}_{horizon_label}_{ep_str}_{lr_str}_{gm_str}{att_suffix_file}_{date_time}"
+        # model_filename = f"{algo_name}_{training_filename}_{horizon_label}_{ep_str}_{lr_str}_{gm_str}{att_suffix_file}_{date_time}"
+        model_filename = f"{algo_name}{att_suffix_file}_{training_filename}_{date_time}"
         model_path = os.path.join("models", model_filename)
         os.makedirs("models", exist_ok=True)
         model.save(model_path)
@@ -1261,9 +1263,9 @@ def adjusted_evaluate_model(model_path, data_file, wear_threshold=None):
         # Create environment for feature extraction (use TRAINING_WEAR_THRESHOLD)
         env = MT_Env(data_file, TRAINING_WEAR_THRESHOLD)
         
-        # Define IAR bounds with realistic random variation (based on ISO standard)
-        IAR_lower = (1.0 - IAR_RANGE) * eval_wear_threshold + np.random.uniform(0.0, 1.0)
-        IAR_upper = (1.0 + IAR_RANGE) * eval_wear_threshold + np.random.uniform(0.0, 1.0)
+        # Define deterministic IAR bounds for evaluation
+        IAR_lower = (1.0 - IAR_RANGE) * eval_wear_threshold
+        IAR_upper = (1.0 + IAR_RANGE) * eval_wear_threshold
         
         # Track evaluation data
         timesteps = []
@@ -1791,121 +1793,3 @@ class REINFORCE(OnPolicyAlgorithm):
             reset_num_timesteps=reset_num_timesteps,
             progress_bar=progress_bar,
         )
-
-
-
-# def evaluate_model(model_path, data_file, wear_threshold=None):
-#     """
-#     Evaluate a trained model on test data.
-    
-#     NOTE: This is a HISTORICAL REPLAY evaluation - we process all data points
-#     regardless of whether the tool exceeds the threshold. This is different from
-#     training episodes which terminate early.
-    
-#     Uses WEAR_THRESHOLD (ISO standard) for display and violation detection.
-    
-#     Returns:
-#     {
-#         'timesteps': [list of timesteps],
-#         'tool_wear': [list of tool wear values],
-#         'actions': [list of actions taken (0 or 1)],
-#         'wear_threshold': WEAR_THRESHOLD value,
-#         'total_replacements': number of replacements,
-#         'threshold_violations': number of times WEAR_THRESHOLD was exceeded
-#     }
-#     """
-#     try:
-#         # Use WEAR_THRESHOLD (ISO standard) for evaluation
-#         eval_wear_threshold = WEAR_THRESHOLD
-        
-#         # Determine algo from model filename
-#         model_name = os.path.basename(model_path)
-#         algo_name = model_name.split('_')[0]  # Extract algo (PPO, A2C, or DQN)
-        
-#         # Load model
-#         algos = {
-#             'PPO': PPO,
-#             'A2C': A2C,
-#             'DQN': DQN,
-#             'REINFORCE': REINFORCE
-#         }
-        
-#         AlgoClass = algos.get(algo_name, A2C)
-#         model = AlgoClass.load(model_path)
-        
-#         # Load data directly for evaluation (not wrapped in environment)
-#         data = pd.read_csv(data_file)
-        
-#         # Create environment just for feature extraction and observation building
-#         # Use TRAINING_WEAR_THRESHOLD for feature extraction
-#         env = MT_Env(data_file, TRAINING_WEAR_THRESHOLD)
-        
-#         # Validate observation shape
-#         expected_shape = model.observation_space.shape[0]
-        
-#         # Track evaluation data
-#         timesteps = []
-#         tool_wear_values = []
-#         actions_taken = []
-#         total_replacements = 0
-#         threshold_violations = 0
-        
-#         # Process all data points (historical replay - no early termination)
-#         for timestep, idx in enumerate(range(len(data))):
-#             try:
-#                 # Get the observation for this row
-#                 obs = data.iloc[idx][env.features].values.astype(np.float32)
-                
-#                 # Validate shape
-#                 if len(obs) != expected_shape:
-#                     raise ValueError(
-#                         f"Feature mismatch at row {idx}! Expected {expected_shape} features but got {len(obs)}.\n"
-#                         f"Features: {env.features}\n"
-#                         f"Data shape: {data.shape}"
-#                     )
-                
-#                 # Get action from model
-#                 action, _ = model.predict(obs, deterministic=True)
-                
-#                 # Store data
-#                 current_wear = data.iloc[idx]['tool_wear']
-#                 timesteps.append(timestep)
-#                 tool_wear_values.append(float(current_wear))
-#                 actions_taken.append(int(action))
-                
-#                 # Track metrics
-#                 if action == 0:  # REPLACE
-#                     total_replacements += 1
-                
-#                 if (current_wear > eval_wear_threshold) and (total_replacements == 0):
-#                     threshold_violations += 1
-                    
-#             except Exception as e:
-#                 raise Exception(f"Error processing row {idx}: {str(e)}")
-        
-#         # Lambda (λ): Difference in timesteps between first replacement and first threshold crossing
-#         t_FR = next((i for i, a in enumerate(actions_taken) if a == 0), None)
-#         T_wt = next((i for i, w in enumerate(tool_wear_values) if w > eval_wear_threshold), None)
-#         lambda_metric = None
-#         tool_usage_pct = None
-#         if t_FR is not None and T_wt is not None:
-#             lambda_metric = T_wt - t_FR
-#             try:
-#                 tool_usage_pct = (t_FR / T_wt) if T_wt > 0 else None
-#             except Exception:
-#                 tool_usage_pct = None
-
-#         return {
-#             'timesteps': timesteps,
-#             'tool_wear': tool_wear_values,
-#             'actions': actions_taken,
-#             'wear_threshold': eval_wear_threshold,
-#             'T_wt': T_wt,
-#             't_FR': t_FR,
-#             'lambda': lambda_metric,
-#             'tool_usage_pct': tool_usage_pct
-#         }
-    
-#     except Exception as e:
-#         # Re-raise with context
-#         raise Exception(f"Evaluation failed: {str(e)}")

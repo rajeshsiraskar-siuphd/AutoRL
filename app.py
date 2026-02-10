@@ -3,6 +3,7 @@
 # Author: Rajesh Siraskar
 # Web-UX code
 # V.1.0: 06-Feb-2026: First commit
+# V.1.2: Stable ver. Model eval save report | 09-Feb-2026
 # ---------------------------------------------------------------------------------------
 
 import streamlit as st
@@ -494,7 +495,7 @@ def plot_evaluation_results(eval_results, model_name):
 
 # --- LAYOUT --- # $$$
 st.title(f'AutoRL: Auto-train Predictive Maintenance Agents') 
-st.markdown(' - V.1.2: Add error handling for feature mismatch during evaluation | 09-Feb-2026')
+st.markdown(' - V.1.2: Stable ver. Model eval save report | 09-Feb-2026')
 
 col1, col2 = st.columns([1.7, 8.3])
 
@@ -584,6 +585,14 @@ with col1:
         )
         
         # Store attention options in session state
+        # Mapping from UI names to backend names
+        st.session_state.attention_mapping = {
+            'NadarayaWatson': 'NW',
+            'Temporal': 'Temporal',
+            'MultiHead': 'MultiHead',
+            'SelfAttn': 'SelfAttn',
+            'Hybrid': 'Hybrid'
+        }
         st.session_state.attention_options = {
             'Temporal': attention_temporal,
             'MultiHead': attention_multihead,
@@ -931,15 +940,19 @@ with col2:
                 # Build attention training tasks
                 att_only_tasks = []
                 algo_names = st.session_state.get('selected_algorithms', ['PPO', 'A2C', 'REINFORCE'])
+                attention_mapping = st.session_state.get('attention_mapping', {})
                 for algo in algo_names:
                     for lr in lrs:
                         for gm in gammas:
                             for att_type in enabled_attention:
+                                # Map UI name to backend name (e.g., 'NadarayaWatson' -> 'NW')
+                                backend_att_type = attention_mapping.get(att_type, att_type)
                                 att_only_tasks.append({
                                     'algo': algo,
                                     'lr': lr,
                                     'gamma': gm,
-                                    'att': att_type,
+                                    'att': att_type,  # UI display name
+                                    'att_backend': backend_att_type,  # Backend name
                                     'status': 'Pending'
                                 })
                 
@@ -964,14 +977,15 @@ with col2:
                     att_only_tasks[i]['status'] = 'Running'
                     render_att_only_status()
                     
-                    # Train with attention
+                    # Train with attention (map UI name to backend name)
+                    backend_att_type = t.get('att_backend', t['att'])
                     res = rl_pdm.train_single_model(
                         data_path,
                         t['algo'],
                         t['lr'],
                         t['gamma'],
                         ui_callback_att_only,
-                        attention_type=t['att'],
+                        attention_type=backend_att_type,
                         data_filename=data_filename
                     )
                     st.session_state.training_results.append(res)
@@ -1085,12 +1099,16 @@ with col2:
                     
                     # Define Attention Tasks
                     att_tasks = []
+                    attention_mapping = st.session_state.get('attention_mapping', {})
                     for att_type in enabled_attention:
+                        # Map UI name to backend name (e.g., 'NadarayaWatson' -> 'NW')
+                        backend_att_type = attention_mapping.get(att_type, att_type)
                         att_tasks.append({
                             'algo': best_agent['Agent'], 
                             'lr': best_agent['LR'], 
                             'gamma': best_agent['Gamma'], 
-                            'att': att_type, 
+                            'att': att_type,  # UI display name
+                            'att_backend': backend_att_type,  # Backend name
                             'status': 'Pending'
                         })
                     
@@ -1112,13 +1130,15 @@ with col2:
                         # Clean Algo Name (remove any existing suffix if present, though base shouldn't have one)
                         algo_base = t['algo'].split(' ')[0]
                         
+                        # Map UI name to backend name
+                        backend_att_type = t.get('att_backend', t['att'])
                         res = rl_pdm.train_single_model(
                             data_path, 
                             algo_base, 
                             t['lr'], 
                             t['gamma'], 
                             ui_callback_phase1, # Reuse callback
-                            attention_type=t['att'],
+                            attention_type=backend_att_type,
                             data_filename=base_filename
                         )
                         st.session_state.training_results.append(res)
