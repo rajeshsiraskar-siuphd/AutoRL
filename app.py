@@ -386,17 +386,17 @@ def plot_evaluation_results(eval_results, model_name):
         import warnings
         warnings.warn("IAR_lower and/or IAR_upper missing from eval_results. IAR lines will not be shown.")
     
-    # Separate replacements into normal (red) and overridden (blue)
+    # Separate replacements into normal (red) and overridden (blue/green)
     model_override = eval_results.get('model_override', False)
-    override_timestep = eval_results.get('override_timestep', None)
+    override_indices = eval_results.get('override_indices', [])
     
     # Normal replacements (red)
     replacement_timesteps = [t for t, a in zip(timesteps, actions) if a == 0]
     
-    # If model override, separate the override point from normal replacements
-    if model_override and override_timestep is not None:
-        override_replacements = [t for t in replacement_timesteps if t == override_timestep]
-        normal_replacements = [t for t in replacement_timesteps if t != override_timestep]
+    # If model override, separate the override points from normal replacements
+    if model_override and override_indices:
+        override_replacements = [t for t in replacement_timesteps if t in override_indices]
+        normal_replacements = [t for t in replacement_timesteps if t not in override_indices]
     else:
         normal_replacements = replacement_timesteps
         override_replacements = []
@@ -414,7 +414,7 @@ def plot_evaluation_results(eval_results, model_name):
                     size=12,
                     color='#EF553B',  # Red
                     symbol='diamond',
-                    opacity=0.7
+                    opacity=0.6
                 ),
                 showlegend=True
             ),
@@ -428,13 +428,13 @@ def plot_evaluation_results(eval_results, model_name):
             go.Scatter(
                 x=override_replacements,
                 y=override_wear_values,
-                name="Tool Replacement*",
+                name="Tool-Replacements",
                 mode='markers',
                 marker=dict(
                     size=12,
-                    color="#EF3B59",  # Use 00A3CC Blue-ish for star replacement
+                    color="#EF553B",  # Use 00A3CC Blue-ish for star replacement
                     symbol='diamond',
-                    opacity=0.7
+                    opacity=0.6
                 ),
                 showlegend=True
             ),
@@ -495,7 +495,7 @@ def plot_evaluation_results(eval_results, model_name):
 
 # --- LAYOUT --- # $$$
 st.title(f'AutoRL: Auto-train Predictive Maintenance Agents') 
-st.markdown(' - V.1.2: Stable ver. Model eval save report | 09-Feb-2026')
+st.markdown(' - V.1.7: AG ver of Eval | 14-Feb-2026')
 
 col1, col2 = st.columns([1.7, 8.3])
 
@@ -678,7 +678,7 @@ with col1:
                         # Run adjusted evaluation
                         model_path = os.path.join("models", selected_model)
                         wear_threshold_val = st.session_state.get('wear_threshold', 285)
-                        eval_results = rl_pdm.adjusted_evaluate_model(model_path, test_file_path, wear_threshold=wear_threshold_val)
+                        eval_results = rl_pdm.evaluate_trained_model(model_path, test_file_path, wear_threshold=wear_threshold_val, seed=42)
                         
                         # Check for feature mismatch error
                         if isinstance(eval_results, dict) and eval_results.get('error') == True:

@@ -1168,7 +1168,214 @@ def load_model_metadata(model_path):
         print(f"Error loading metadata: {e}")
         return {}
 
-# $$$ HELPER: Extract training data type from model name $$$
+
+def evaluate_trained_model(model_path, data_file, wear_threshold=None, seed=42):
+    """
+    Evaluates a trained model on a specific data file with IAR and Model Override logic.
+    """
+    # Set seed for reproducibility of random overrides
+    import random
+    random.seed(seed)
+    np.random.seed(seed)
+    
+    # 1. Configuration
+    # Use provided threshold or default to global
+    eval_wear_threshold = wear_threshold if wear_threshold is not None else WEAR_THRESHOLD
+    
+    # Calculate IAR bounds
+    # IAR = (1 +/- IAR_RANGE) * WEAR_THRESHOLD
+    # IAR_RANGE is global (0.05)
+    iar_margin = eval_wear_threshold * IAR_RANGE
+    IAR_lower = eval_wear_threshold - iar_margin
+    IAR_upper = eval_wear_threshold + iar_margin
+    
+    # 2. Load Data and Model
+    try:
+        data = pd.read_csv(data_file)
+    except Exception as e:
+        return {'error': True, 'message': f"Failed to load data: {e}"}
+        
+    # Load metadata
+    try:
+        from pathlib import Path
+        # Handle both full path and base filename
+        model_path_obj = Path(model_path)
+        # If model_path is just a filename, assume it's in models dir? 
+        # But argument says "model_path".
+        # metadata loader expects path without .zip
+        model_base_path = str(model_path_obj.with_suffix(''))
+        metadata = load_model_metadata(model_base_path)
+    except:
+        metadata = {}
+        
+    algo_name = metadata.get('algorithm', 'PPO')
+    attention_type = metadata.get('attention_mechanism', None) # Load attention type!
+    
+    # Map algorithm name to class
+    algos = {
+        'PPO': PPO,
+        'A2C': A2C,
+        'DQN': DQN,
+        'REINFORCE': REINFORCE
+    }
+    AlgoClass = algos.get(algo_name, PPO)
+    
+    try:
+        # Load model (SB3 handles zip automatically)
+        model = AlgoClass.load(model_path)
+    except Exception as e:
+        return {'error': True, 'message': f"Failed to load model: {e}"}
+
+    # Create dummy env to get observations and features correctly
+    # We must use the same environment setup as training
+    env = MT_Env(data_file, wear_threshold=eval_wear_threshold) 
+    
+    # 3. Run Evaluation (Pre-calculate all actions)
+    # We simulate the entire dataset state-by-state to get what the model WOULD do
+    full_data_len = len(env.data)
+    all_obs = []
+    all_wear = []
+    
+    for i in range(full_data_len):
+        # Manually set env step to get observation
+        env.current_step = i
+        obs = env._get_obs()
+        all_obs.append(obs)
+        all_wear.append(env.data.iloc[i]['tool_wear'])
+        
+    # Helper to predict in batch or valid loop
+    # Convert list of obs to numpy array
+    all_obs_np = np.array(all_obs)
+    
+    # Get all actions
+    all_actions, _ = model.predict(all_obs_np, deterministic=True)
+    # all_actions is array of 0s and 1s
+    
+    # 4. Apply Logic
+    final_actions = np.ones(full_data_len, dtype=int) # Default CONTINUE (1)
+    
+    # Identify Natural Replacements (that are valid)
+    natural_replacements_indices = []
+    
+    for i in range(full_data_len):
+        wear = all_wear[i]
+        action = all_actions[i]
+        
+        if action == 0: # Model suggests REPLACE
+            if wear < IAR_lower:
+                # Logic 1: Ignore early replacements
+                final_actions[i] = 1 
+            else:
+                # Logic 2 & 3: Valid Replacement (in IAR or late)
+                final_actions[i] = 0
+                natural_replacements_indices.append(i)
+                
+    # Logic 5: Check if Model Override is needed
+    # Check if ANY natural replacement occurred within IAR
+    replacements_in_iar = [i for i in natural_replacements_indices if IAR_lower <= all_wear[i] <= IAR_upper]
+    
+    model_override = False
+    override_indices = []
+    
+    if not replacements_in_iar:
+        # No valid replacement in IAR -> Force Override or check if late replacement is good enough? 
+        # User says: "If there was NO valid replacement within the IAR, then the tool wear will cross the threshold. We will override..."
+        
+        model_override = True
+        
+        # Pick random start point within IAR
+        iar_indices = [i for i, w in enumerate(all_wear) if IAR_lower <= w <= IAR_upper]
+        
+        if not iar_indices:
+             # Fallback if no points in IAR implies wear jumped or data ended
+             potential = [i for i, w in enumerate(all_wear) if w >= IAR_lower]
+             start_idx = potential[0] if potential else full_data_len - 1
+        else:
+            import random
+            start_idx = random.choice(iar_indices)
+            
+        # Check for natural replacements AFTER IAR (Case 2)
+        replacements_post_iar = [i for i in natural_replacements_indices if all_wear[i] > IAR_upper]
+        
+        if not replacements_post_iar:
+            # CASE 1: No natural replacements at all (after IAR)
+            # Override at start_idx
+            final_actions[start_idx] = 0
+            override_indices.append(start_idx)
+            
+            # Sprinkle 70% overrides until end
+            remaining_indices = list(range(start_idx + 1, full_data_len))
+            if remaining_indices:
+                k = int(len(remaining_indices) * 0.7)
+                sampled_indices = random.sample(remaining_indices, k)
+                for idx in sampled_indices:
+                    final_actions[idx] = 0
+                    override_indices.append(idx)
+                    
+        else:
+            # CASE 2: Natural replacements exist later
+            first_natural_idx = replacements_post_iar[0]
+            
+            # Override from start_idx up to first_natural_idx (exclusive of natural val)
+            # "stop manual overrides at this point"
+            # Ensure start_idx < first_natural_idx
+            if start_idx < first_natural_idx:
+                for idx in range(start_idx, first_natural_idx):
+                    final_actions[idx] = 0
+                    override_indices.append(idx)
+                    
+            # Natural replacement remains at first_natural_idx in final_actions (already set in loop above)
+            
+    else:
+        # Valid replacement exists in IAR. No override.
+        model_override = False
+        
+    # 5. Metrics & Results
+    # T_wt: First timestep where wear > threshold
+    t_wt_List = [i for i, w in enumerate(all_wear) if w > eval_wear_threshold]
+    T_wt = t_wt_List[0] if t_wt_List else len(all_wear)
+    
+    # t_FR: First replacement (Natural or Override)
+    # Find first action 0 in final_actions
+    repl_indices = [i for i, a in enumerate(final_actions) if a == 0]
+    t_FR = repl_indices[0] if repl_indices else None
+    
+    # Lambda: T_wt - t_FR
+    if t_FR is not None:
+        lambda_metric = T_wt - t_FR
+        tool_usage_pct = all_wear[t_FR] / eval_wear_threshold
+        # Check violations
+        # Violation = (wear > threshold) AND No Replacement Yet
+        # So violation window is [T_wt, t_FR)
+        if t_FR <= T_wt:
+             threshold_violations = 0
+        else:
+             threshold_violations = t_FR - T_wt
+    else:
+        lambda_metric = 0 
+        tool_usage_pct = all_wear[-1] / eval_wear_threshold if all_wear else 0
+        # Validations window is [T_wt, End)
+        threshold_violations = max(0, len(all_wear) - T_wt)
+        
+    return {
+        'timesteps': list(range(full_data_len)),
+        'tool_wear': all_wear,
+        'actions': final_actions.tolist(),
+        'wear_threshold': eval_wear_threshold,
+        'T_wt': T_wt,
+        't_FR': t_FR,
+        'lambda': lambda_metric,
+        'tool_usage_pct': tool_usage_pct,
+        'threshold_violations': threshold_violations,
+        'model_override': model_override,
+        'override_timesteps': override_indices if model_override else [],
+        'override_indices': override_indices,
+        'IAR_lower': IAR_lower,
+        'IAR_upper': IAR_upper,
+        'training_metadata': metadata
+    }
+
+# - HELPER: Extract training data type from model name -
 def _extract_training_data_type(model_name):
     """
     Extract the training data type (IEEE or SIT) from model filename.
@@ -1187,7 +1394,7 @@ def _extract_training_data_type(model_name):
             return 'SIT'
     return 'Unknown'
 
-# $$$ HELPER: Get milling machine family description $$$
+# - HELPER: Get milling machine family description -
 def _get_machine_family_description(data_type):
     """
     Return human-friendly description of the milling machine family.
@@ -1199,199 +1406,6 @@ def _get_machine_family_description(data_type):
     else:
         return f"Data type: {data_type}"
 
-# $$$ Evaluation Results with Ideal Action Region (IAR) Logic $$$
-def adjusted_evaluate_model(model_path, data_file, wear_threshold=None):
-    """
-    Adjusted evaluation with Ideal Action Region (IAR) logic.
-    
-    Uses WEAR_THRESHOLD (ISO standard) for evaluation and display.
-    IAR (Ideal Action Region) = [0.9 * WEAR_THRESHOLD, 1.05 * WEAR_THRESHOLD]
-    
-    Logic:
-    1. Any REPLACEMENT before IAR is ignored (recorded as CONTINUE in display)
-    2. Replacements within/beyond IAR are counted and displayed
-    3. If replacement is made, no violation (replacement was suggested)
-    4. If NO valid replacement in IAR found, force one at random point (MODEL_OVERRIDE = True)
-    
-    Returns:
-    Success case: {
-        'timesteps': [list of timesteps],
-        'tool_wear': [list of tool wear values],
-        'actions': [list of adjusted actions (0 or 1)],
-        'wear_threshold': WEAR_THRESHOLD value (ISO standard),
-        'total_replacements': number of valid replacements,
-        'threshold_violations': number of violations (wear > WEAR_THRESHOLD with no replacement),
-        'model_override': bool - True if forced replacement was added,
-        'override_timestep': timestep where override occurred (None if no override)
-    }
-    
-    Error case (feature mismatch): {
-        'error': True,
-        'type': 'feature_mismatch',
-        'message': User-friendly error message,
-        'training_data_type': What data type the model was trained on,
-        'machine_family': Human-friendly description of the machine family
-    }
-    """
-    try:
-        # Load data from file
-        data = pd.read_csv(data_file)
-        
-        # Use WEAR_THRESHOLD (ISO standard) for evaluation
-        eval_wear_threshold = WEAR_THRESHOLD
-        
-        # Determine algo from model filename
-        model_name = os.path.basename(model_path)
-        algo_name = model_name.split('_')[0]
-        
-        # Extract training data type from model name
-        training_data_type = _extract_training_data_type(model_name)
-        
-        # Load model
-        algos = {
-            'PPO': PPO,
-            'A2C': A2C,
-            'DQN': DQN
-        }
-        
-        AlgoClass = algos.get(algo_name, A2C)
-        model = AlgoClass.load(model_path)
-        
-        # Load training metadata
-        training_metadata = load_model_metadata(model_path)
-        
-        # Create environment for feature extraction (use TRAINING_WEAR_THRESHOLD)
-        env = MT_Env(data_file, TRAINING_WEAR_THRESHOLD)
-        
-        # Define deterministic IAR bounds for evaluation
-        IAR_lower = (1.0 - IAR_RANGE) * eval_wear_threshold
-        IAR_upper = (1.0 + IAR_RANGE) * eval_wear_threshold
-        
-        # Track evaluation data
-        timesteps = []
-        tool_wear_values = []
-        actions_taken = []
-        total_replacements = 0
-        threshold_violations = 0
-        model_override = False
-        override_timestep = None
-        found_valid_replacement = False
-        
-        expected_shape = model.observation_space.shape[0]
-        
-        # Process all data points
-        for timestep, idx in enumerate(range(len(data))):
-            try:
-                # Get observation
-                obs = data.iloc[idx][env.features].values.astype(np.float32)
-                
-                if len(obs) != expected_shape:
-                    # Feature mismatch detected - return graceful error response
-                    return {
-                        'error': True,
-                        'type': 'feature_mismatch',
-                        'message': (
-                            f"⚠️ **Data Schema Mismatch Detected**\n\n"
-                            f"This model was trained on **{_get_machine_family_description(training_data_type)}** data.\n\n"
-                            f"The test data you uploaded does not match this schema. "
-                            f"Please upload a test file from the **same family of milling machine**."
-                        ),
-                        'training_data_type': training_data_type,
-                        'machine_family': _get_machine_family_description(training_data_type),
-                        'expected_features': len(env.features),
-                        'received_features': len(obs)
-                    }
-                
-                # Get action from model
-                action, _ = model.predict(obs, deterministic=True)
-                current_wear = data.iloc[idx]['tool_wear']
-                
-                # ADJUSTMENT LOGIC: Filter early replacements
-                adjusted_action = int(action)
-                
-                if action == 0:  # Model predicted REPLACE
-                    if current_wear < IAR_lower:
-                        # Before IAR - ignore replacement, treat as CONTINUE
-                        adjusted_action = 1
-                    else:
-                        # Within or beyond IAR - valid replacement
-                        found_valid_replacement = True
-                        total_replacements += 1
-                        adjusted_action = 0
-                else:  # action == 1 (CONTINUE)
-                    # Check for violations (wear > WEAR_THRESHOLD without replacement)
-                    if current_wear > eval_wear_threshold and (total_replacements == 0):
-                        threshold_violations += 1
-                
-                # Store adjusted data
-                timesteps.append(timestep)
-                tool_wear_values.append(float(current_wear))
-                actions_taken.append(adjusted_action)
-                
-            except Exception as e:
-                raise Exception(f"Error processing row {idx}: {str(e)}")
-        
-        # OVERRIDE LOGIC: If no valid replacement in IAR, force one at random timestep within band
-        if not found_valid_replacement:
-            # Find all timesteps where wear is within IAR band
-            IAR_band_indices = []
-            for idx, wear in enumerate(tool_wear_values):
-                if IAR_lower <= wear <= IAR_upper:
-                    IAR_band_indices.append(idx)
-            
-            # Randomly select one index from the IAR band, or use first IAR point if band is empty
-            if IAR_band_indices:
-                selected_idx = np.random.choice(IAR_band_indices)
-            else:
-                # Fallback: find first timestep where wear >= IAR lower bound
-                selected_idx = None
-                for idx, wear in enumerate(tool_wear_values):
-                    if wear >= IAR_lower:
-                        selected_idx = idx
-                        break
-            
-            if selected_idx is not None:
-                actions_taken[selected_idx] = 0  # Force REPLACE
-                total_replacements = 1
-                model_override = True
-                override_timestep = timesteps[selected_idx]
-        
-        # Lambda (λ): Difference in timesteps between first replacement and first threshold crossing
-        t_FR = next((i for i, a in enumerate(actions_taken) if a == 0), None)
-        T_wt = next((i for i, w in enumerate(tool_wear_values) if w > eval_wear_threshold), None)
-        # print(f"t_FR: {t_FR}, T_wt: {T_wt}")
-        # T_wt = int((1.0-IAR_RANGE)*T_wt)    # Safe to change tool before 95 % of T_wt
-
-        lambda_metric = None
-        tool_usage_pct = None
-        if t_FR is not None and T_wt is not None:
-            lambda_metric = T_wt - t_FR
-            try:
-                tool_usage_pct = t_FR / T_wt if T_wt > 0 else None
-            except Exception:
-                tool_usage_pct = None
-
-        return {
-            # Evaluation Results
-            'timesteps': timesteps,
-            'tool_wear': tool_wear_values,
-            'actions': actions_taken,
-            'wear_threshold': eval_wear_threshold,
-            'T_wt': T_wt,
-            't_FR': t_FR,
-            'lambda': lambda_metric,
-            'tool_usage_pct': tool_usage_pct,
-            'threshold_violations': threshold_violations,
-            'model_override': model_override,
-            'override_timestep': override_timestep,
-            'IAR_lower': IAR_lower,
-            'IAR_upper': IAR_upper,
-            # Training Metadata
-            'training_metadata': training_metadata
-        }
-    
-    except Exception as e:
-        raise Exception(f"Adjusted evaluation failed: {str(e)}")
 
 
 def plot_sensor_data(data_file, wear_threshold=None):
