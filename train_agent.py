@@ -3,9 +3,25 @@
 # Author: Rajesh Siraskar
 # CLI for training and evaluation of RL agents for Predictive Maintenance
 # V.1.0: 11-Feb-2026: First commit
+# Usage: 
+# Training: train_agent.py -S SIT -A PPO,A2C,DQN,REINFORCE -E 300 -AM 0
+# Evaluation: train_agent.py -V -S IEEE
 # ---------------------------------------------------------------------------------------
-print('\nAutoRL CLI')
-print('- Loading libraries ...')
+print('\n\n--------------------------------------------------------------------------')
+print(' AutoRL CLI')
+print('--------------------------------------------------------------------------')
+print('Author: Rajesh Siraskar')
+print('Version: V.3.1 | 14-Feb-2026\n\n')
+print('CLI version that trains and evaluates RL agents for Predictive Maintenance')
+print('--------------------------------------------------------------------------')
+print('Usage:')
+print('Training:   train_agent.py -S SIT -A PPO,A2C,DQN,REINFORCE -E 1e4 -AM 1')
+print('Evaluation: train_agent.py -V -S IEEE')
+print('--------------------------------------------------------------------------\n\n')
+
+print(' - Loading libraries ...')
+import os
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 import argparse
 import sys
 import os
@@ -41,10 +57,17 @@ def get_schema_files(schema: str, data_dir: str = "data") -> List[str]:
     Returns:
         List of full file paths for the schema
     """
-    schema_pattern = os.path.join(data_dir, f"{schema}_*.csv")
-    files = glob.glob(schema_pattern)
+    # Check if subdirectory exists for strict organizational compliance
+    subdir = os.path.join(data_dir, schema)
+    if os.path.isdir(subdir):
+        files = glob.glob(os.path.join(subdir, "*.csv"))
+    else:
+        # Fallback to flat directory
+        schema_pattern = os.path.join(data_dir, f"{schema}_*.csv")
+        files = glob.glob(schema_pattern)
+        
     # Exclude test files and tiny files
-    files = [f for f in files if not f.endswith(('_TEST.csv', '_tiny.csv'))]
+    files = [f for f in files if not f.endswith(('_TEST.csv', '_tiny.csv', 'temp_sensor_data.csv'))]
     files.sort()
     return files
 
@@ -139,6 +162,110 @@ def train_agents(schema: str, algos: List[str], episodes: int, attention_mech: i
     return trained_models
 
 
+def discover_trained_models(schema: str, models_dir: str = "models") -> Dict:
+    """
+    Discover already trained models for the specified schema.
+    
+    Args:
+        schema: 'SIT' or 'IEEE'
+        models_dir: Directory containing models
+    
+    Returns:
+        Dictionary mapping (algo, training_file, attention_type) -> model_path
+    """
+    print(f"\n{'='*80}")
+    print(f"DISCOVERY PHASE: Looking for existing {schema} models in '{models_dir}'")
+    print(f"{'='*80}\n")
+    
+    if not os.path.exists(models_dir):
+        print(f"ERROR: Models directory '{models_dir}' not found.")
+        return {}
+
+    trained_models = {}
+    
+    # Mapping from full attention names (in metadata) to short forms (for display/keys)
+    attention_full_to_short = {
+        'NW': 'NW', 'NadarayaWatson': 'NW',
+        'DL': 'DL', 'Simple': 'DL',
+        'TP': 'TP', 'Temporal': 'TP', 
+        'MH': 'MH', 'MultiHead': 'MH',
+        'SA': 'SA', 'SelfAttn': 'SA',
+        'HY': 'HY', 'Hybrid': 'HY'
+    }
+
+    count = 0
+    # Walk through models dir
+    for filename in os.listdir(models_dir):
+        if filename.endswith(".zip"):
+            model_path = os.path.join(models_dir, filename)
+            model_base = os.path.splitext(model_path)[0] # remove .zip
+            metadata_path = model_base + "_metadata.json"
+            
+            algo = "Unknown"
+            training_file = "Unknown"
+            att_short = None
+            
+            # 1. Try Metadata first (Robust)
+            if os.path.exists(metadata_path):
+                try:
+                    with open(metadata_path, 'r') as f:
+                        meta = json.load(f)
+                        
+                    algo = meta.get('algorithm', 'Unknown')
+                    training_file = meta.get('training_data', 'Unknown')
+                    att_full = meta.get('attention_mechanism')
+                    
+                    if att_full:
+                        att_short = attention_full_to_short.get(att_full, att_full)
+                    else:
+                        att_short = None
+                        
+                    # Filter by schema in training_file
+                    if schema not in training_file:
+                        continue
+
+                except Exception as e:
+                    print(f"  ⚠ Error reading metadata for {filename}: {e}")
+                    continue
+            
+            else:
+                # 2. Fallback: Parse filename
+                # Format: Algo_TrainingData_... (e.g. PPO_IEEE_tiny_...)
+                if schema not in filename:
+                    continue
+                    
+                parts = filename.split('_')
+                if len(parts) < 3:
+                     continue
+                
+                algo = parts[0]
+                # Guess training file - usually parts[1] is schema, parts[2] is suffix? 
+                # e.g. IEEE_tiny -> parts[1]=IEEE, parts[2]=tiny
+                # We can try to reconstruct but it's risky. 
+                # Let's rely on the user having metadata for now, OR simplistic parsing.
+                # If schema is IEEE, training file probably starts with IEEE
+                training_file = f"{parts[1]}_{parts[2]}" if len(parts) >= 3 else f"{schema}_Unknown"
+                
+                # Check for attention suffix in filename
+                if "_NW" in filename: att_short = "NW"
+                elif "_DL" in filename: att_short = "DL"
+                elif "_TP" in filename: att_short = "TP"
+                elif "_MH" in filename: att_short = "MH"
+                elif "_SA" in filename: att_short = "SA"
+                elif "_HY" in filename: att_short = "HY"
+            
+            # Add to dict
+            key = (algo, training_file, att_short)
+            trained_models[key] = model_path
+            count += 1
+            
+            att_label = f" ({att_short})" if att_short else ""
+            print(f"  Found: {algo} - {training_file}{att_label}")
+
+    print(f"\nFound {count} models matching schema '{schema}'.")
+    return trained_models
+
+
 def create_evaluation_plot(eval_result: Dict, model_filename: str, test_filename: str, results_dir: str = "results"):
     """
     Create and save an evaluation plot showing tool wear and replacements.
@@ -179,15 +306,12 @@ def create_evaluation_plot(eval_result: Dict, model_filename: str, test_filename
         )
         
         # Add wear threshold as dotted line on primary y-axis
-        fig.add_trace(
-            go.Scatter(
-                x=timesteps,
-                y=[wear_threshold] * len(timesteps),
-                name="Wear Threshold",
-                line=dict(color='gray', width=2, dash='dot'),
-                mode='lines',
-                showlegend=True
-            ),
+        fig.add_hline(
+            y=wear_threshold,
+            line_dash="dot",
+            line_color="gray",
+            annotation_text="Threshold",
+            annotation_position="right",
             secondary_y=False
         )
         
@@ -197,8 +321,8 @@ def create_evaluation_plot(eval_result: Dict, model_filename: str, test_filename
         if IAR_lower is not None and IAR_upper is not None:
             fig.add_hline(
                 y=IAR_lower,
-                line_dash="dash",
-                line_color="lightgreen",
+                line_dash="dot",
+                line_color="teal",
                 opacity=0.5,
                 annotation_text="IAR Lower",
                 annotation_position="right",
@@ -206,8 +330,8 @@ def create_evaluation_plot(eval_result: Dict, model_filename: str, test_filename
             )
             fig.add_hline(
                 y=IAR_upper,
-                line_dash="dash",
-                line_color="lightgreen",
+                line_dash="dot",
+                line_color="teal",
                 opacity=0.5,
                 annotation_text="IAR Upper",
                 annotation_position="right",
@@ -256,11 +380,11 @@ def create_evaluation_plot(eval_result: Dict, model_filename: str, test_filename
                 go.Scatter(
                     x=override_replacements,
                     y=override_wear_values,
-                    name="Tool Replacement*",
+                    name="Tool-Replacements",
                     mode='markers',
                     marker=dict(
                         size=12,
-                        color="#EF3B59",
+                        color="#EF553B",
                         symbol='diamond',
                         opacity=0.7
                     ),
@@ -278,8 +402,11 @@ def create_evaluation_plot(eval_result: Dict, model_filename: str, test_filename
             title=f"Model Evaluation: {model_filename}_{test_filename}",
             height=500,
             template="plotly_white",
+            plot_bgcolor='#f0f2f6',
             hovermode='x unified'
         )
+        fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='white')
+        fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='white', secondary_y=False)
         
         # Save plot
         plot_filename = f"{model_filename}_{test_filename}_Eval.png"
@@ -468,6 +595,8 @@ def create_heatmaps(results_df: pd.DataFrame, schema: str, attention_mech: int, 
     num_agents = len(heatmap_data)
     figsize_height = max(10, num_agents * 0.5)  # Scale height based on number of agents
     fig, ax = plt.subplots(figsize=(14, figsize_height))
+    fig.patch.set_facecolor('#f0f2f6')
+    ax.set_facecolor('#f0f2f6')
     
     # Use color scheme: Green (1.0), Yellow (0.5), Red (0.0)
     sns.heatmap(
@@ -547,6 +676,13 @@ Examples:
         help="Apply attention mechanism: 1 (yes) or 0 (no) (default: 0)"
     )
     
+    parser.add_argument(
+        '-V', '--eval-only',
+        action='store_true',
+        default=False,
+        help="Evaluation only mode: Skip training and evaluate existing models (default: False)"
+    )
+    
     args = parser.parse_args()
     
     # Parse algorithms
@@ -570,13 +706,16 @@ Examples:
     print(f"{'='*80}\n")
     
     try:
-        # Phase 1: Training
-        trained_models = train_agents(
-            schema=args.schema,
-            algos=algos,
-            episodes=args.episodes,
-            attention_mech=args.attention_mechanism
-        )
+        # Phase 1: Training or Discovery
+        if args.eval_only:
+            trained_models = discover_trained_models(args.schema)
+        else:
+            trained_models = train_agents(
+                schema=args.schema,
+                algos=algos,
+                episodes=args.episodes,
+                attention_mech=args.attention_mechanism
+            )
         
         if not trained_models:
             print("ERROR: No models were successfully trained.")

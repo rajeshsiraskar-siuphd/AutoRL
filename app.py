@@ -10,6 +10,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import os
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 import rl_pdm # Import our backend
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -313,7 +314,9 @@ def plot_4_panel(metrics, title, height=600, data_filename=None, t_ss=None, sigm
     if data_filename:
         final_title = f"{title} | Data: {data_filename}"
     
-    fig.update_layout(title_text=final_title, height=height, template="plotly_white")
+    fig.update_layout(title_text=final_title, height=height, template="plotly_white", plot_bgcolor='#f0f2f6')
+    fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='white')
+    fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='white')
     return fig
 
 def plot_evaluation_results(eval_results, model_name):
@@ -347,15 +350,12 @@ def plot_evaluation_results(eval_results, model_name):
     )
     
     # Add wear threshold as dotted line on primary y-axis
-    fig.add_trace(
-        go.Scatter(
-            x=timesteps,
-            y=[wear_threshold] * len(timesteps),
-            name="Wear Threshold",
-            line=dict(color='gray', width=2, dash='dot'),
-            mode='lines',
-            showlegend=True
-        ),
+    fig.add_hline(
+        y=wear_threshold,
+        line_dash="dot",
+        line_color="gray",
+        annotation_text="Wear Threshold",
+        annotation_position="top right",
         secondary_y=False
     )
     
@@ -488,8 +488,11 @@ def plot_evaluation_results(eval_results, model_name):
         title=f"Model Evaluation: {model_name}",
         height=500,
         template="plotly_white",
+        plot_bgcolor='#f0f2f6',
         hovermode='x unified'
     )
+    fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='white')
+    fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='white', secondary_y=False)
     
     return fig
 

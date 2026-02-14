@@ -1565,8 +1565,11 @@ def plot_sensor_data(data_file, wear_threshold=None):
             height=900,  # Increased height to accommodate larger spacing
             showlegend=False, 
             template="plotly_white", # Light background
+            plot_bgcolor='#f0f2f6',
             margin=dict(l=40, r=40, t=60, b=40) # Loosened margins
-        ) 
+        )
+        fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='white')
+        fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='white') 
         return fig
 
     except Exception as e:
