@@ -246,7 +246,11 @@ def discover_trained_models(schema: str, models_dir: str = "models") -> Dict:
                              continue
                         
                         algo = parts[0]
-                        # If schema is IEEE, training file starts with IEEE
+                        # Guess training file - usually parts[1] is schema, parts[2] is suffix? 
+                        # e.g. IEEE_tiny -> parts[1]=IEEE, parts[2]=tiny
+                        # We can try to reconstruct but it's risky. 
+                        # Let's rely on the user having metadata for now, OR simplistic parsing.
+                        # If schema is IEEE, training file probably starts with IEEE
                         training_file = f"{parts[1]}_{parts[2]}" if len(parts) >= 3 else f"{schema}_Unknown"
                         
                         # Check for attention suffix in filename

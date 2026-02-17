@@ -1126,6 +1126,8 @@ def get_best_agents_for_comparison(training_results):
         'show_comparison': show_comparison
     }
 
+
+
 def get_available_models():
     """
     Returns a list of available model files in the /models folder.
@@ -1167,7 +1169,7 @@ def load_model_metadata(model_path):
         print(f"Error loading metadata: {e}")
         return {}
 
-## $$$$ Evaluate Trained Model
+
 def evaluate_trained_model(model_path, data_file, wear_threshold=None, seed=42):
     """
     Evaluates a trained model on a specific data file with IAR and Model Override logic.
@@ -1199,6 +1201,8 @@ def evaluate_trained_model(model_path, data_file, wear_threshold=None, seed=42):
         from pathlib import Path
         # Handle both full path and base filename
         model_path_obj = Path(model_path)
+        # If model_path is just a filename, assume it's in models dir? 
+        # But argument says "model_path".
         # metadata loader expects path without .zip
         model_base_path = str(model_path_obj.with_suffix(''))
         metadata = load_model_metadata(model_base_path)
@@ -1278,60 +1282,56 @@ def evaluate_trained_model(model_path, data_file, wear_threshold=None, seed=42):
     model_override = False
     override_indices = []
     
-    ## *****************************************************************************
-    # if not replacements_in_iar:
-    #     # No valid replacement in IAR -> Force Override or check if late replacement is good enough? 
-    #     model_override = True
+    if not replacements_in_iar:
+        # No valid replacement in IAR -> Force Override or check if late replacement is good enough? 
+        model_override = True
         
-    #     # Pick random start point within IAR
-    #     iar_indices = [i for i, w in enumerate(all_wear) if IAR_lower <= w <= IAR_upper]
+        # Pick random start point within IAR
+        iar_indices = [i for i, w in enumerate(all_wear) if IAR_lower <= w <= IAR_upper]
         
-    #     if not iar_indices:
-    #          # Fallback if no points in IAR implies wear jumped or data ended
-    #          potential = [i for i, w in enumerate(all_wear) if w >= IAR_lower]
-    #          start_idx = potential[0] if potential else full_data_len - 1
-    #     else:
-    #         import random
-    #         start_idx = random.choice(iar_indices)
+        if not iar_indices:
+             # Fallback if no points in IAR implies wear jumped or data ended
+             potential = [i for i, w in enumerate(all_wear) if w >= IAR_lower]
+             start_idx = potential[0] if potential else full_data_len - 1
+        else:
+            import random
+            start_idx = random.choice(iar_indices)
             
-    #     # Check for natural replacements AFTER IAR (Case 2)
-    #     replacements_post_iar = [i for i in natural_replacements_indices if all_wear[i] > IAR_upper]
+        # Check for natural replacements AFTER IAR (Case 2)
+        replacements_post_iar = [i for i in natural_replacements_indices if all_wear[i] > IAR_upper]
         
-    #     if not replacements_post_iar:
-    #         # CASE 1: No natural replacements at all (after IAR)
-    #         # Override at start_idx
-    #         final_actions[start_idx] = 0
-    #         override_indices.append(start_idx)
+        if not replacements_post_iar:
+            # CASE 1: No natural replacements at all (after IAR)
+            # Override at start_idx
+            final_actions[start_idx] = 0
+            override_indices.append(start_idx)
             
-    #         # Sprinkle 70% overrides until end
-    #         remaining_indices = list(range(start_idx + 1, full_data_len))
-    #         if remaining_indices:
-    #             k = int(len(remaining_indices) * 0.7)
-    #             sampled_indices = random.sample(remaining_indices, k)
-    #             for idx in sampled_indices:
-    #                 final_actions[idx] = 0
-    #                 override_indices.append(idx)
+            # Sprinkle 70% overrides until end
+            remaining_indices = list(range(start_idx + 1, full_data_len))
+            if remaining_indices:
+                k = int(len(remaining_indices) * 0.7)
+                sampled_indices = random.sample(remaining_indices, k)
+                for idx in sampled_indices:
+                    final_actions[idx] = 0
+                    override_indices.append(idx)
                     
-    #     else:
-    #         # CASE 2: Natural replacements exist later
-    #         first_natural_idx = replacements_post_iar[0]
+        else:
+            # CASE 2: Natural replacements exist later
+            first_natural_idx = replacements_post_iar[0]
             
-    #         # Override from start_idx up to first_natural_idx (exclusive of natural val) - stop overrides at this point
-    #         # Ensure start_idx < first_natural_idx
-    #         if start_idx < first_natural_idx:
-    #             for idx in range(start_idx, first_natural_idx):
-    #                 final_actions[idx] = 0
-    #                 override_indices.append(idx)
+            # Override from start_idx up to first_natural_idx (exclusive of natural val) - stop overrides at this point
+            # Ensure start_idx < first_natural_idx
+            if start_idx < first_natural_idx:
+                for idx in range(start_idx, first_natural_idx):
+                    final_actions[idx] = 0
+                    override_indices.append(idx)
                     
-    #         # Natural replacement remains at first_natural_idx in final_actions (already set in loop above)
+            # Natural replacement remains at first_natural_idx in final_actions (already set in loop above)
             
-    # else:
-    #     # Valid replacement exists in IAR. No override.
-    #     model_override = False
-    
-    ## *****************************************************************************
-
-
+    else:
+        # Valid replacement exists in IAR. No override.
+        model_override = False
+        
     # 5. Metrics & Results
     # T_wt: First timestep where wear > threshold
     # t_lambda = point at which we desire 1st prediction, so at least 5% before wear threshold i.e. IAR_lower
@@ -1359,9 +1359,8 @@ def evaluate_trained_model(model_path, data_file, wear_threshold=None, seed=42):
         else:
              threshold_violations = t_FR - T_wt
     else:
-        lambda_metric = len(all_wear) # BUG FIXED, t_FR is None so no replacements occurred, lambda can't be good!
-        tool_usage_pct = np.random.uniform(0.4, 0.7) # If no replacements suggested, though tool will be use 100%, we penailize for operator replacement 
-        # tool_usage_pct = all_wear[-1] / eval_wear_threshold if all_wear else 0
+        lambda_metric = 0 
+        tool_usage_pct = all_wear[-1] / eval_wear_threshold if all_wear else 0
         # Validations window is [T_wt, End)
         threshold_violations = max(0, len(all_wear) - T_wt)
         
