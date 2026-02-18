@@ -977,8 +977,10 @@ def train_single_model(data_file, algo_name, lr, gm, callback_func, attention_ty
         elif attention_type == 'Hybrid':
             att_suffix_file = "_HY"
         
-        # model_filename = f"{algo_name}_{training_filename}_{horizon_label}_{ep_str}_{lr_str}_{gm_str}{att_suffix_file}_{date_time}"
-        model_filename = f"{algo_name}{att_suffix_file}_{training_filename}_{date_time}"
+        
+        # Build filename with LR, Gamma, and optional attention suffix
+        # Format: PPO_SIT_10_200_1e-03_99_NW_17-02-10-36
+        model_filename = f"{algo_name}_{training_filename}_{horizon_label}_{ep_str}_{lr_str}_{gm_str}{att_suffix_file}_{date_time}"
         model_path = os.path.join("models", model_filename)
         os.makedirs("models", exist_ok=True)
         model.save(model_path)
